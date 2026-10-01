@@ -57,6 +57,7 @@ import chat.schildi.resources.toStringHolder
 import chat.schildi.revenge.HEADLESS_WINDOW_ID
 import chat.schildi.revenge.WindowId
 import chat.schildi.revenge.bugreport.RevengeBugReporter
+import chat.schildi.revenge.config.ScAppDirs
 import chat.schildi.revenge.config.keybindings.ALLOWED_DESTINATION_STRINGS
 import chat.schildi.revenge.config.keybindings.Action
 import chat.schildi.revenge.config.keybindings.ActionArgument
@@ -158,12 +159,18 @@ import shire.res.generated.resources.command_not_applicable
 import shire.res.generated.resources.command_not_found
 import shire.res.generated.resources.toast_bug_report_progress
 import shire.res.generated.resources.toast_room_created
+import java.awt.Image
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.Transferable
+import java.awt.image.BufferedImage
 import java.io.File
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import javax.imageio.ImageIO
 import kotlin.collections.map
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -1235,6 +1242,7 @@ class KeyboardActionHandler(
         override fun viewInExternalApp(content: String, fileExtension: String) =
             this@KeyboardActionHandler.viewInExternalApp(this, content, fileExtension)
         override fun getFilesFromClipboard() = this@KeyboardActionHandler.getFilesFromClipboard()
+        override fun getImageFromClipboard() = this@KeyboardActionHandler.getImageFromClipboard()
         override fun getStringFromClipboard() = this@KeyboardActionHandler.getStringFromClipboard()
         override fun openLink(uri: String): ActionResult =
             this@KeyboardActionHandler.openLink(uri)
@@ -2925,6 +2933,54 @@ class KeyboardActionHandler(
         }
     }
 
+    /**
+     * Reads image contents from the clipboard (e.g. a screenshot, or "copy image" in another application) and stores
+     * them as a temporary PNG file, since the composer attaches files by path. Returns null when the clipboard does
+     * not contain an image. The file lives in a dedicated per-paste directory, so it can be cleaned up like other
+     * app-owned attachments.
+     */
+    fun getImageFromClipboard(): File? {
+        val systemClipboard = Toolkit.getDefaultToolkit().systemClipboard
+        val contents = systemClipboard.getContents(null) ?: return null
+        val image = contents.clipboardImage() ?: return null
+        return storeClipboardImage(image)
+    }
+
+    private fun Transferable.clipboardImage(): Image? {
+        if (isDataFlavorSupported(DataFlavor.imageFlavor)) {
+            runCatching { getTransferData(DataFlavor.imageFlavor) as? Image }.getOrNull()?.let { return it }
+        }
+        // Fall back to raw image data (e.g. image/png as an InputStream) when no AWT image flavor is offered
+        val flavor = transferDataFlavors.firstOrNull {
+            it.representationClass == InputStream::class.java && it.mimeType.startsWith("image/")
+        } ?: return null
+        return runCatching {
+            (getTransferData(flavor) as? InputStream)?.use { ImageIO.read(it) }
+        }.getOrNull()
+    }
+
+    private fun storeClipboardImage(image: Image): File? = runCatching {
+        val dir = File(File(ScAppDirs.getUserCacheDir(), "clipboard-paste"), UUID.randomUUID().toString())
+        check(dir.isDirectory || dir.mkdirs()) { "Could not create clipboard image cache directory" }
+        val file = File(dir, "image.png")
+        val buffered = image as? BufferedImage ?: run {
+            val width = image.getWidth(null).coerceAtLeast(1)
+            val height = image.getHeight(null).coerceAtLeast(1)
+            BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB).also { target ->
+                val graphics = target.createGraphics()
+                try {
+                    graphics.drawImage(image, 0, 0, null)
+                } finally {
+                    graphics.dispose()
+                }
+            }
+        }
+        ImageIO.write(buffered, "png", file)
+        file
+    }.onFailure {
+        log.w("Failed to read image from clipboard", it)
+    }.getOrNull()
+
     fun openLink(uri: String): ActionResult {
         if (uri.startsWith("matrix:")) {
             MatrixLinkPatterns.parseMatrixLink(uri)?.let {
@@ -3487,6 +3543,7 @@ interface ActionContext {
     fun copyToClipboard(content: String, description: ComposableStringHolder? = null): ActionResult
     fun viewInExternalApp(content: String, fileExtension: String = ".txt"): ActionResult
     fun getFilesFromClipboard(): List<File>
+    fun getImageFromClipboard(): File?
     fun getStringFromClipboard(): String?
     fun openLink(uri: String): ActionResult
     fun focusByRole(role: FocusRole): Boolean

@@ -1774,16 +1774,34 @@ class ConversationViewModel(
 
                 Action.Conversation.ComposerPasteAttachment -> {
                     val files = getFilesFromClipboard()
-                    if (files.isEmpty() || files.size > 1) {
+                    if (files.size > 1) {
                         ActionResult.Inapplicable
                     } else {
-                        launchActionAsync(
-                            "addAttachment",
-                            viewModelScope,
-                            Dispatchers.IO,
-                            "addAttachment",
-                        ) {
-                            loadAttachmentFileIntoComposer(files[0])
+                        val file = files.firstOrNull()
+                        if (file != null) {
+                            launchActionAsync(
+                                "addAttachment",
+                                viewModelScope,
+                                Dispatchers.IO,
+                                "addAttachment",
+                            ) {
+                                loadAttachmentFileIntoComposer(file)
+                            }
+                        } else {
+                            // The clipboard may only contain image contents (e.g. a screenshot) without any file path
+                            val image = getImageFromClipboard()
+                            if (image == null) {
+                                ActionResult.Inapplicable
+                            } else {
+                                launchActionAsync(
+                                    "addAttachment",
+                                    viewModelScope,
+                                    Dispatchers.IO,
+                                    "addAttachment",
+                                ) {
+                                    loadAttachmentFileIntoComposer(image, mimeType = "image/png", isFileAppOwned = true)
+                                }
+                            }
                         }
                     }
                 }
