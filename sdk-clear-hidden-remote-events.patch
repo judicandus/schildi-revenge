@@ -1,0 +1,168 @@
+From 6e2acecc89de5f49ef2cb8f8de4dbce9c4cd07d4 Mon Sep 17 00:00:00 2001
+From: Judicandus <dan@araucaria.club>
+Date: Tue, 29 Sep 2026 18:59:27 -0600
+Subject: [PATCH] fix(ui): clear stale remote events when clearing a timeline
+
+`TimelineStateTransaction::clear()` only removes remote events that have a
+timeline item when local echoes are pending. Remote events without an item
+(reactions, edits, redactions, filtered events) stayed in the internal list,
+so the positional diffs that follow from the event cache were applied at
+offset indices, which could drop an unrelated event and duplicate another.
+
+Remove the remaining remote events as well.
+
+Signed-off-by: Judicandus <dan@araucaria.club>
+Assisted-by: Kilo (kilo-auto/frontier: Claude Opus 5.5, Claude Sonnet 5, DeepSeek V4.1 Flash)
+---
+ .../matrix-sdk-ui/changelog.d/9999.fixed.md   |  1 +
+ .../src/timeline/controller/mod.rs            | 12 ++++
+ .../timeline/controller/observable_items.rs   |  7 ++
+ .../timeline/controller/state_transaction.rs  |  4 ++
+ .../matrix-sdk-ui/src/timeline/tests/echo.rs  | 70 +++++++++++++++++++
+ 5 files changed, 94 insertions(+)
+ create mode 100644 crates/matrix-sdk-ui/changelog.d/9999.fixed.md
+
+diff --git a/crates/matrix-sdk-ui/changelog.d/9999.fixed.md b/crates/matrix-sdk-ui/changelog.d/9999.fixed.md
+new file mode 100644
+index 000000000..4ebdc4abe
+--- /dev/null
++++ b/crates/matrix-sdk-ui/changelog.d/9999.fixed.md
+@@ -0,0 +1 @@
++Fix duplicated or missing timeline items after a timeline is cleared while a message is still sending.
+diff --git a/crates/matrix-sdk-ui/src/timeline/controller/mod.rs b/crates/matrix-sdk-ui/src/timeline/controller/mod.rs
+index d2997449b..9e8028796 100644
+--- a/crates/matrix-sdk-ui/src/timeline/controller/mod.rs
++++ b/crates/matrix-sdk-ui/src/timeline/controller/mod.rs
+@@ -542,6 +542,18 @@ impl<P: RoomDataProvider> TimelineController<P> {
+         self.state.read().await.items.clone_items()
+     }
+ 
++    #[cfg(test)]
++    pub(super) async fn remote_event_ids(&self) -> Vec<OwnedEventId> {
++        self.state
++            .read()
++            .await
++            .items
++            .all_remote_events()
++            .iter()
++            .map(|meta| meta.event_id.clone())
++            .collect()
++    }
++
+     #[cfg(test)]
+     pub(super) async fn subscribe_raw(
+         &self,
+diff --git a/crates/matrix-sdk-ui/src/timeline/controller/observable_items.rs b/crates/matrix-sdk-ui/src/timeline/controller/observable_items.rs
+index 51fb72f84..135ff0496 100644
+--- a/crates/matrix-sdk-ui/src/timeline/controller/observable_items.rs
++++ b/crates/matrix-sdk-ui/src/timeline/controller/observable_items.rs
+@@ -241,6 +241,13 @@ impl<'observable_items> ObservableItemsTransaction<'observable_items> {
+         self.all_remote_events.remove(event_index)
+     }
+ 
++    /// Remove all remote events, without touching the timeline items.
++    ///
++    /// Not to be confused with clearing the timeline items!
++    pub fn clear_remote_events(&mut self) {
++        self.all_remote_events.clear();
++    }
++
+     /// Push a new remote event at the front of all remote events.
+     ///
+     /// Not to be confused with pushing a timeline item to the front!
+diff --git a/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs b/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs
+index 88d3e736f..e8c67eabb 100644
+--- a/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs
++++ b/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs
+@@ -1078,6 +1078,10 @@ impl<'a, P: RoomDataProvider> TimelineStateTransaction<'a, P> {
+                 }
+             });
+ 
++            // Remote events without a timeline item (e.g. reactions) must be
++            // removed too.
++            self.items.clear_remote_events();
++
+             // Remove adjacent date dividers.
+             let mut idx = 0;
+             while idx < self.items.len() {
+diff --git a/crates/matrix-sdk-ui/src/timeline/tests/echo.rs b/crates/matrix-sdk-ui/src/timeline/tests/echo.rs
+index 60cbc20ab..503ecf20a 100644
+--- a/crates/matrix-sdk-ui/src/timeline/tests/echo.rs
++++ b/crates/matrix-sdk-ui/src/timeline/tests/echo.rs
+@@ -421,3 +421,73 @@ async fn test_clear_does_not_break_mapping_between_timeline_items_and_remote_eve
+             .is_some_and(|event_id| event_id.as_str() == "$2")
+     }));
+ }
++
++#[async_test]
++async fn test_clear_with_local_echo_removes_hidden_remote_events() {
++    let timeline = TestTimeline::new().await;
++
++    timeline
++        .handle_local_event(AnyMessageLikeEventContent::RoomMessage(
++            RoomMessageEventContent::text_plain("echo"),
++        ))
++        .await;
++
++    let f = &timeline.factory;
++    timeline
++        .handle_event_update(
++            vec![VectorDiff::Append {
++                values: [
++                    f.text_msg("foo").sender(&ALICE).event_id(event_id!("$0")).into_event(),
++                    f.reaction(event_id!("$0"), "+1")
++                        .sender(&BOB)
++                        .event_id(event_id!("$r"))
++                        .into_event(),
++                ]
++                .into(),
++            }],
++            RemoteEventOrigin::Sync,
++        )
++        .await;
++
++    // The reaction is a remote event without a timeline item.
++    assert_eq!(timeline.controller.remote_event_ids().await, [event_id!("$0"), event_id!("$r")]);
++    let items = timeline.controller.items().await;
++    assert!(!items.iter().any(|item| {
++        item.as_event().and_then(|event| event.event_id()).is_some_and(|id| id == "$r")
++    }));
++
++    timeline
++        .handle_event_update(
++            vec![
++                VectorDiff::Clear,
++                VectorDiff::Append {
++                    values: [
++                        f.text_msg("one").sender(&ALICE).event_id(event_id!("$1")).into_event(),
++                        f.text_msg("two").sender(&ALICE).event_id(event_id!("$2")).into_event(),
++                    ]
++                    .into(),
++                },
++                VectorDiff::Remove { index: 1 },
++                VectorDiff::PushBack {
++                    value: f
++                        .text_msg("two")
++                        .sender(&ALICE)
++                        .event_id(event_id!("$2"))
++                        .into_event(),
++                },
++            ],
++            RemoteEventOrigin::Sync,
++        )
++        .await;
++
++    let items = timeline.controller.items().await;
++    let remote_ids = items
++        .iter()
++        .filter_map(|item| item.as_event())
++        .filter_map(|event| event.event_id().map(ToOwned::to_owned))
++        .collect::<Vec<_>>();
++    assert_eq!(remote_ids, [event_id!("$1"), event_id!("$2")]);
++    assert!(items.last().unwrap().as_event().unwrap().is_local_echo());
++
++    assert_eq!(timeline.controller.remote_event_ids().await, [event_id!("$1"), event_id!("$2")]);
++}
+-- 
+2.43.0
+

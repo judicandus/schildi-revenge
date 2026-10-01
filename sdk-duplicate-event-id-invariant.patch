@@ -1,0 +1,78 @@
+From 056370c2e6f0b182b37766b5f1d623919a2ee6c5 Mon Sep 17 00:00:00 2001
+From: Judicandus <dan@araucaria.club>
+Date: Tue, 29 Sep 2026 19:00:55 -0600
+Subject: [PATCH] test(ui): add a duplicate-event-id invariant to the timeline
+
+`TimelineStateTransaction::check_invariants()` already asserts that no
+unique id and no read receipt is duplicated. Add a matching check for
+event ids, so that a future mapping bug between timeline items and remote
+events fails loudly instead of silently duplicating an item.
+
+Adapt `test_rtc_members_update_last_only`, which reused an event id for a
+back-paginated notification.
+
+Signed-off-by: Judicandus <dan@araucaria.club>
+Assisted-by: Kilo (kilo-auto/frontier: Claude Opus 5.5, Claude Sonnet 5, DeepSeek V4.1 Flash)
+---
+ .../timeline/controller/state_transaction.rs  | 22 +++++++++++++++++++
+ .../matrix-sdk-ui/src/timeline/tests/rtc.rs   |  4 ++--
+ 2 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs b/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs
+index 88d3e736f..48c4cfa2c 100644
+--- a/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs
++++ b/crates/matrix-sdk-ui/src/timeline/controller/state_transaction.rs
+@@ -507,6 +507,28 @@ impl<'a, P: RoomDataProvider> TimelineStateTransaction<'a, P> {
+     fn check_invariants(&self) {
+         self.check_no_duplicate_read_receipts();
+         self.check_no_unused_unique_ids();
++        self.check_no_duplicate_event_ids();
++    }
++
++    fn check_no_duplicate_event_ids(&self) {
++        let duplicates = self
++            .items
++            .iter_remotes_region()
++            .filter_map(|(_nth, item)| item.as_event()?.event_id())
++            .duplicates()
++            .collect::<Vec<_>>();
++
++        if !duplicates.is_empty() {
++            #[cfg(any(debug_assertions, test))]
++            panic!("duplicate event ids in this timeline: {duplicates:?}\n{:?}", self.items);
++
++            #[cfg(not(any(debug_assertions, test)))]
++            tracing::error!(
++                ?duplicates,
++                items = ?self.items,
++                "duplicate event ids in this timeline",
++            );
++        }
+     }
+ 
+     /// Check whether any read receipts are duplicated. If so, log an error
+diff --git a/crates/matrix-sdk-ui/src/timeline/tests/rtc.rs b/crates/matrix-sdk-ui/src/timeline/tests/rtc.rs
+index d1ba99fb8..56ad40b96 100644
+--- a/crates/matrix-sdk-ui/src/timeline/tests/rtc.rs
++++ b/crates/matrix-sdk-ui/src/timeline/tests/rtc.rs
+@@ -186,7 +186,7 @@ async fn test_rtc_members_update_last_only() {
+                     .rtc_notification(NotificationType::Ring)
+                     .sender(*ALICE)
+                     .call_intent(CallIntent::Audio)
+-                    .event_id(event_id!("$notification_event_old"))
++                    .event_id(event_id!("$notification_event_older"))
+                     .server_ts(
+                         MilliSecondsSinceUnixEpoch::from_system_time(old_notification_ts).unwrap(),
+                     )
+@@ -201,7 +201,7 @@ async fn test_rtc_members_update_last_only() {
+         assert_next_matches!(stream, VectorDiff::PushFront { value, .. } => value);
+     assert_eq!(
+         notification_item.event_id().expect("eventId should be set"),
+-        event_id!("$notification_event_old")
++        event_id!("$notification_event_older")
+     );
+ 
+     assert_pending!(stream);
+-- 
+2.43.0
+
