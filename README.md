@@ -1,3 +1,16 @@
+> ## Personal fork — not the official project
+>
+> This is my own fork of [SchildiChat Revenge](https://github.com/SchildiChat/schildi-revenge), which I build and use
+> locally. It carries a few **experimental fixes developed with AI assistance**, reviewed and tested by me. It is not
+> affiliated with or endorsed by SchildiChat, and no support is offered for it.
+>
+> For anything official, use upstream: <https://github.com/SchildiChat/schildi-revenge>
+>
+> The fixes I currently carry are tagged `personal/feat-*`: `personal/feat-start-chat`,
+> `personal/feat-timeline-dedupe`, `personal/feat-paste-image`.
+
+---
+
 [![Translation status](https://weblate.spiritcroc.de/widget/schildichat/schildi-revenge/svg-badge.svg)](https://weblate.spiritcroc.de/projects/schildichat/schildi-revenge/)
 [![Matrix room #revenge:schildi.chat](https://img.shields.io/matrix/revenge:schildi.chat.svg?label=%23revenge:schildi.chat&logo=matrix&server_fqdn=matrix.org)](https://matrix.to/#/#revenge:schildi.chat)
 
